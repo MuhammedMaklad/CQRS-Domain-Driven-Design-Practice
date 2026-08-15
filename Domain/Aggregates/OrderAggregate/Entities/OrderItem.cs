@@ -17,6 +17,7 @@ public sealed class OrderItem : Entity<OrderItemId>
   public DateTime CreatedAt { get; private set; }
   public DateTime UpdatedAt { get; private set; }
 
+  private OrderItem() { }
   private OrderItem(ProductId productId, Money price, int quantity) : base(OrderItemId.New())
   {
     ProductId = productId;
