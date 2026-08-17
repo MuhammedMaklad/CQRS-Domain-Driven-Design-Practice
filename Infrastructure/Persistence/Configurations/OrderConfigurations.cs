@@ -45,6 +45,6 @@ public sealed class OrderConfigurations : IEntityTypeConfiguration<Order>
     builder.Navigation(order => order.OrderItems)
       .Metadata.SetPropertyAccessMode(PropertyAccessMode.Field);
 
-    builder.Property<int[]>("RowVersion").IsRowVersion();
+    builder.Property<byte[]>("RowVersion").IsRowVersion();
   }
 }
