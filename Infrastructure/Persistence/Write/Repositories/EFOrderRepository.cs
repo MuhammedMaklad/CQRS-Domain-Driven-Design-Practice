@@ -3,7 +3,7 @@ using Domain.Aggregates.OrderAggregate.Repositories;
 using Domain.Aggregates.OrderAggregate.ValueObjects;
 using Microsoft.EntityFrameworkCore;
 
-namespace Infrastructure.Persistence.Repositories;
+namespace Infrastructure.Persistence.Write.Repositories;
 
 internal sealed class EFOrderRepository : RepositoryBase<Order>, IOrderRepository
 {

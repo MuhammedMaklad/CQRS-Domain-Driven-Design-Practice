@@ -3,7 +3,7 @@ using Domain.Aggregates.OrderAggregate.ValueObjects;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace Infrastructure.Persistence.Configurations;
+namespace Infrastructure.Persistence.Write.Configurations;
 
 public sealed class OrderItemConfigurations : IEntityTypeConfiguration<OrderItem>
 {

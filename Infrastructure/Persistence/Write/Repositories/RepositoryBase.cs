@@ -1,6 +1,6 @@
-using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Write;
 
-namespace Infrastructure.Persistence.Repositories;
+namespace Infrastructure.Persistence.Write.Repositories;
 
 
 internal abstract class RepositoryBase<T> where T : class
