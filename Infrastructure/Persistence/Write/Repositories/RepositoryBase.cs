@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore.Write;
+using Microsoft.EntityFrameworkCore;
 
 namespace Infrastructure.Persistence.Write.Repositories;
 
