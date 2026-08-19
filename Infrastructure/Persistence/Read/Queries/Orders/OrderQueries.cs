@@ -4,7 +4,6 @@ using Application.Common.interfaces;
 using Application.Order.Queries;
 using Application.Order.Queries.ReadModels;
 using Dapper;
-using Domain.Aggregates.OrderAggregate.Enums;
 
 internal sealed class OrderQueries : IOrderQueryService
 {
@@ -36,41 +35,40 @@ internal sealed class OrderQueries : IOrderQueryService
       return null;
     var orderItemsRow = await multi.ReadAsync<OrderItemRow>();
 
-    return Map(orderRow, orderItemsRow);
+    return OrderReadMapper.Map(orderRow, orderItemsRow);
   }
 
-  private static OrderReadModel Map(OrderRow order, IEnumerable<OrderItemRow> items)
+  public async Task<IEnumerable<OrderReadModel>> GetCustomerOrdersAsync(Guid customerId, CancellationToken token)
   {
-    Enum.TryParse<OrderStatus>(order.Status, ignoreCase: true, out var status);
-    return new OrderReadModel
+    const string sql = """
+      SELECT o.Id, o.Status, o.CustomerId,
+             o.ShippingAddress_City, o.ShippingAddress_Country,
+             o.ShippingAddress_PostalCode, o.ShippingAddress_Street,
+             o.TotalPrice_Amount, o.TotalPrice_Currency,
+             i.Id, i.ProductId, i.Quantity, i.UnitPrice_Amount, i.UnitPrice_Currency
+      FROM Orders o
+      LEFT JOIN OrderItems i ON o.Id = i.OrderId
+      WHERE o.CustomerId = @CustomerId;
+      """;
+
+    using var connection = _dbConnectionFactory.CreateConnection();
+    var command = new CommandDefinition(sql, new { CustomerId = customerId }, cancellationToken: token);
+
+    var rows = await connection.QueryAsync<OrderRow, OrderItemRow?, (OrderRow Order, OrderItemRow? Item)>(
+      command, (order, item) => (order, item), splitOn: "Id");
+
+    var grouped = new Dictionary<Guid, (OrderRow Order, List<OrderItemRow> Items)>();
+    foreach (var (order, item) in rows)
     {
-      Id = order.Id,
-      CustomerId = order.CustomerId,
-      OrderStatus = status,
-      City = order.ShippingAddress_City,
-      Street = order.ShippingAddress_Street,
-      PostalCode = order.ShippingAddress_PostalCode,
-      Country = order.ShippingAddress_Country,
-      TotalPriceAmount = order.TotalPrice_Amount,
-      TotalPriceCurrency = order.TotalPrice_Currency,
-      Items = items.Select(i => new OrderItemReadModel
+      if (!grouped.TryGetValue(order.Id, out var entry))
       {
-        Id = i.Id,
-        ProductId = i.ProductId,
-        Quantity = i.Quantity,
-        UnitPriceAmount = i.UnitPrice_Amount,
-        UnitPriceCurrency = i.UnitPrice_Currency
-      }).ToList()
-    };
+        entry = (order, []);
+        grouped[order.Id] = entry;
+      }
+      if (item is not null)
+        entry.Items.Add(item);
+    }
+
+    return grouped.Values.Select(group => OrderReadMapper.Map(group.Order, group.Items));
   }
-
-  private sealed record OrderRow(
-    Guid Id, string Status, Guid CustomerId,
-    string ShippingAddress_City, string ShippingAddress_Country,
-    string ShippingAddress_PostalCode, string ShippingAddress_Street,
-    decimal TotalPrice_Amount, string TotalPrice_Currency);
-
-  private sealed record OrderItemRow(
-    Guid Id, Guid ProductId, int Quantity,
-    decimal UnitPrice_Amount, string UnitPrice_Currency);
 }
