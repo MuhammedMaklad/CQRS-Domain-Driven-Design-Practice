@@ -9,20 +9,21 @@ with a mentor. Modeling only — no tests.
 | Layer | Responsibility | Depends on |
 |---|---|---|
 | Domain | Aggregates, entities, value objects, domain events, invariants | — |
-| Application | Use cases, query ports, `IUnitOfWork` | Domain |
+| Application | Use cases (MediatR), query ports, read models, `IUnitOfWork`, `IDbConnectionFactory` | Domain |
 | Infrastructure | EF Core write side, Dapper read side, migrations | Application, Domain |
-| Presentation | Minimal APIs | Application, Infrastructure |
+| Presentation | Minimal APIs (endpoints) | Application, Infrastructure |
 
 CQRS separation: **write = EF Core** (repositories + unit of work), **read = Dapper**
-(projections). Query ports and read models live in Application; Dapper adapters live
-in Infrastructure.
+(projections). Command/query handlers, ports, and read models live in Application;
+Dapper adapters live in Infrastructure.
 
 ## Tech Stack
 
 - .NET 10, minimal APIs
 - EF Core 10 (SQL Server) — write side
-- Dapper + Microsoft.Data.SqlClient — read side (in progress)
-- MediatR, FluentValidation — planned (Application/CQRS layer)
+- Dapper + Microsoft.Data.SqlClient — read side
+- MediatR 12.5 — command/query pipeline
+- FluentValidation — planned
 - Solution: `cqrs-pratice.slnx`
 
 ## Project Structure
@@ -30,33 +31,31 @@ in Infrastructure.
 ```
 cqrs-pratice/
 ├── Domain/                                    # no dependencies
-│   ├── Common/
-│   │   ├── Abstractions/   IAggregateRoot, IDomainEvent
-│   │   ├── BaseClasses/    AggregateRoot, Entity, DomainEvent, ValueObject
-│   │   └── Exceptions/     DomainException
-│   └── Aggregates/
-│       └── OrderAggregate/
-│           ├── Entities/         Order, OrderItem
-│           ├── Enums/            OrderStatus
-│           ├── Events/           OrderItemAdded, OrderItemRemoved, OrderConfirmed, OrderCancelled
-│           ├── Repositories/     IOrderRepository
-│           └── ValueObjects/     OrderId, OrderItemId, CustomerId, ProductId, Money, Address
+│   └── Aggregates/OrderAggregate/
+│       ├── Entities/         Order, OrderItem
+│       ├── Enums/            OrderStatus
+│       ├── Events/           OrderItemAdded, OrderItemRemoved, OrderConfirmed, OrderCancelled
+│       ├── Repositories/     IOrderRepository
+│       └── ValueObjects/     OrderId, OrderItemId, CustomerId, ProductId, Money, Address
 ├── Application/                              # → Domain
-│   ├── Common/Interfaces/        IUnitOfWork
-│   └── DependencyInjection.cs    (stub — MediatR/validation pending)
+│   ├── Common/Interfaces/     IUnitOfWork, IDbConnectionFactory
+│   ├── Orders/
+│   │   ├── Commands/CreateOrder/   CreateOrderCommand, CreateOrderCommandHandler
+│   │   └── Queries/                IOrderQueryService, ReadModels,
+│   │                               GetOrderById, GetOrders
+│   └── DependencyInjection.cs      AddApplication() — MediatR
 ├── Infrastructure/                           # → Application, Domain
-│   ├── DependencyInjection.cs    (stub — wiring pending)
+│   ├── DependencyInjection.cs      AddInfrastructure(IConfiguration) — DbContext + ports
 │   └── Persistence/
-│       ├── Write/
-│       │   ├── ApplicationDbContext.cs
-│       │   ├── DesignTimeDbContextFactory.cs
-│       │   ├── Configurations/   OrderConfigurations, OrderItemConfigurations
-│       │   ├── Repositories/     RepositoryBase<T>, EFOrderRepository, EFUnitOfWork
-│       │   └── Migrations/       20260817092451_init
-│       └── Read/                 (planned — DapperOrderQueryService)
+│       ├── Write/                  ApplicationDbContext, DesignTimeDbContextFactory,
+│       │                           Configurations, Repositories (RepositoryBase,
+│       │                           EFOrderRepository, EFUnitOfWork), Migrations (init)
+│       └── Read/                   DbConnectionFactory,
+│                                   Queries/Orders (OrderQueries, OrderRows, OrderReadMapper)
 └── Presentation/                             # → Application, Infrastructure
-    ├── Program.cs                (OpenAPI + /health only)
-    └── appsettings*.json
+    ├── Program.cs                  AddApplication + AddInfrastructure + OpenAPI + /health
+    ├── Endpoints/OrderEndpoints.cs MapGroup /api/v1/orders
+    └── appsettings*.json           connection string (Default)
 ```
 
 ## Domain Model (Order aggregate)
@@ -65,48 +64,75 @@ cqrs-pratice/
   (`OrderItemAdded`, `OrderItemRemoved`, `OrderConfirmed`, `OrderCancelled`)
 - Value objects: `OrderId`, `OrderItemId`, `CustomerId`, `ProductId`, `Money`, `Address`
 - Invariants: `MaxQuantityPerLine = 100`, money validation, guarded status transitions
+- Factories: `Order.Create(customerId, address)` and `Order.Create(customerId, address, items)`
+  (the latter adds items via `AddItem`, preserving duplicate-line merge + validation)
+- `OrderItems` exposed as `IReadOnlyCollection` over a private `List` (EF-friendly)
 - `IOrderRepository` (Domain port): `GetByIdAsync`, `ExistsAsync`, `Add`, `Remove`
 
 ## Persistence (Write / Read split)
 
-- `Persistence/Write/` — `ApplicationDbContext`, configurations (complex types for
-  Money/Address, `rowversion`, status-as-string), `RepositoryBase<T>`,
-  `EFOrderRepository`, `EFUnitOfWork` (wrapper over the scoped DbContext)
-- `Persistence/Read/` — Dapper query adapters (planned: `DapperOrderQueryService`
-  behind `Application/Orders/Queries/IOrderQueryService`)
+- **Write (EF Core):** `ApplicationDbContext` + configurations — Money/Address as complex
+  types, `rowversion` concurrency, status stored as string. `RepositoryBase<T>`,
+  `EFOrderRepository`, `EFUnitOfWork` (scoped-DbContext wrapper, `IUnitOfWork` in Application).
+- **Read (Dapper):** `OrderQueries` (implements `IOrderQueryService`) —
+  `GetOrderByIdAsync` via `QueryMultipleAsync` (order + items), `GetCustomerOrdersAsync`
+  via a single `LEFT JOIN` multi-map round-trip (`splitOn: "Id"`) grouped in memory.
+  SQL rows (`OrderRow`, `OrderItemRow`) → `OrderReadMapper.Map`.
+
+## API (Presentation)
+
+| Method | Route | Description |
+|---|---|---|
+| GET | `/api/v1/orders/{id:guid}` | Order by id (read model) |
+| GET | `/api/v1/orders/customer/{id:guid}` | Orders for a customer |
+| POST | `/api/v1/orders/create` | Create order → `201 { id }`; `DomainException` → `400` |
+| GET | `/health` | Liveness check |
+
+POST body:
+```json
+{
+  "customerId": "00000000-0000-0000-0000-000000000001",
+  "shippingAddress": { "street": "1 Main St", "city": "Cairo", "postalCode": "12345", "country": "EG" },
+  "itemRequests": [ { "productId": "00000000-0000-0000-0000-000000000101", "unitPrice": 10.5, "currency": "USD", "quantity": 2 } ]
+}
+```
 
 ## Database & Migrations
 
-Startup project is `Infrastructure` (the design-time factory resolves the connection
-string from Presentation's appsettings via a relative path):
+`dotnet ef` targets `Infrastructure` as project **and** startup (the design-time factory
+resolves the connection string from Presentation's appsettings via a relative path):
 
 ```
 dotnet ef migrations add <Name> --project Infrastructure --startup-project Infrastructure
 dotnet ef database update      --project Infrastructure --startup-project Infrastructure
 ```
 
-Current migration: `init` (20260817092451). Database not yet applied.
+Current migration: `init` (20260817092451) — applied.
 
 ## Build & Run
 
 ```
 dotnet build cqrs-pratice.slnx
-dotnet run --project Presentation    # /health endpoint
+dotnet run --project Presentation    # http://localhost:5003 (http) / 7100 (https)
 ```
+
+Verified end-to-end: `POST /api/v1/orders/create` persists via EF, `GET /api/v1/orders/{id}`
+projects via Dapper.
 
 ## Current Status
 
 - [x] Domain: Order aggregate, value objects, domain events, `IOrderRepository`
-- [x] EF write side: DbContext, configurations, migration `init`, `EFOrderRepository`, `EFUnitOfWork`
-- [~] Read/write split in `Persistence/` (Write done, Read pending)
-- [ ] Application read contracts (`IOrderQueryService`, read models)
-- [ ] Dapper implementation in `Persistence/Read/`
-- [ ] DI wiring (`AddInfrastructure(connectionString)`), Program.cs registration + order endpoints
-- [ ] Application/CQRS layer (MediatR, FluentValidation, command handlers)
+- [x] EF write side: DbContext, configurations, migration `init` (applied), repos + UoW
+- [x] Application/CQRS: MediatR, `CreateOrder` command, `GetOrderById` / `GetCustomerOrders` queries
+- [x] Dapper read side: `OrderQueries`, rows + mapper, `DbConnectionFactory`
+- [x] DI wiring + Program.cs + endpoints — verified end-to-end
+- [~] FluentValidation — planned
+- [ ] Domain event dispatch (events raised in aggregate, not yet handled)
+- [ ] Concurrency-aware write workflows (Confirm/Cancel endpoints)
 
-## Known Issues (current)
+## Known Issues
 
-- Build is broken mid-restructure: `RepositoryBase.cs` has a bad
-  `using Microsoft.EntityFrameworkCore.Write;` and the migration files still use
-  stale namespaces (`Infrastructure.Persistence.Migrations`). Repair queue defined.
-- DI and Program.cs not wired yet — `DependencyInjection.cs` is a stub.
+- `Microsoft.OpenApi` 2.0.0 — NU1903 high-severity vulnerability (bump pending)
+- Migration class `init` triggers CS8981 (lowercase type name) — cosmetic
+- `Application.Common.interfaces` namespace still lowercase — casing wart
+- Domain events raised but not dispatched — intentional, next learning step
