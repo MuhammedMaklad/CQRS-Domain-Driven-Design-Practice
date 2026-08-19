@@ -33,22 +33,17 @@ internal static class OrderEndpoints
 
     group.MapPost("/create", async (CreateOrderCommand command, ISender sender, CancellationToken token) =>
     {
-      try
+
+      var id = await sender.Send(command, cancellationToken: token);
+      return Results.Created($"/api/v1/orders/{id}", new
       {
-        var id = await sender.Send(command, cancellationToken: token);
-        return Results.Created($"/api/v1/orders/{id}", new
+        Message = "Order Created Successfully",
+        data = new
         {
-          Message = "Order Created Successfully",
-          data = new
-          {
-            id
-          }
-        });
-      }
-      catch (DomainException ex)
-      {
-        return Results.BadRequest(new { ex.Message });
-      }
+          id
+        }
+      });
+
     });
     return app;
   }
