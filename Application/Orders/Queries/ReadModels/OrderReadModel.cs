@@ -1,7 +1,7 @@
 using Domain.Aggregates.OrderAggregate.Enums;
 using Domain.Aggregates.OrderAggregate.ValueObjects;
 
-namespace Application.Order.Queries.ReadModels;
+namespace Application.Orders.Queries.ReadModels;
 
 public sealed class OrderReadModel
 {

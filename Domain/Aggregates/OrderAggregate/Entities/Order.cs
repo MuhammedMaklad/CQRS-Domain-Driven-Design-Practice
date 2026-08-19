@@ -17,7 +17,7 @@ public sealed class Order : AggregateRoot<OrderId>
   public OrderStatus Status { get; private set; }
   public CustomerId CustomerId { get; private set; }
   public Money TotalPrice { get; private set; } = Money.Zero();
-  public ReadOnlyCollection<OrderItem> OrderItems => _orderItems.AsReadOnly();
+  public IReadOnlyCollection<OrderItem> OrderItems => _orderItems;
 
 
   private Order() { } // for entity framework
@@ -31,6 +31,14 @@ public sealed class Order : AggregateRoot<OrderId>
   public static Order Create(CustomerId customerId, Address shippingAddress)
   {
     return new Order(customerId, shippingAddress);
+  }
+
+  public static Order Create(CustomerId customerId, Address shippingAddress, IEnumerable<OrderItem> items)
+  {
+    var order = new Order(customerId, shippingAddress);
+    foreach (var item in items)
+      order.AddItem(item.ProductId, item.UnitPrice, item.Quantity);
+    return order;
   }
   public void AddItem(ProductId productId, Money price, int quantity)
   {

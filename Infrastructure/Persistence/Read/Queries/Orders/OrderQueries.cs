@@ -1,8 +1,8 @@
 namespace Infrastructure.Persistence.Read.Queries.Orders;
 
 using Application.Common.interfaces;
-using Application.Order.Queries;
-using Application.Order.Queries.ReadModels;
+using Application.Orders.Queries;
+using Application.Orders.Queries.ReadModels;
 using Dapper;
 
 internal sealed class OrderQueries : IOrderQueryService

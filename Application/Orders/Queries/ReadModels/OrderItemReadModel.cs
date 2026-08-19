@@ -1,4 +1,4 @@
-namespace Application.Order.Queries.ReadModels;
+namespace Application.Orders.Queries.ReadModels;
 
 public sealed class OrderItemReadModel
 {

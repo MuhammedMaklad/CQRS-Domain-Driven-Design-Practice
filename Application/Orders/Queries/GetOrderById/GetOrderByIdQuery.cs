@@ -1,7 +1,7 @@
-using Application.Order.Queries.ReadModels;
+using Application.Orders.Queries.ReadModels;
 using MediatR;
 
-namespace Application.Order.Queries.GetOrderById;
+namespace Application.Orders.Queries.GetOrderById;
 
 
 public sealed record GetOrderByIdQuery(Guid Id) : IRequest<OrderReadModel?> { }

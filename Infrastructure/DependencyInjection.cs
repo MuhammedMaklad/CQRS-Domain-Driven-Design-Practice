@@ -1,5 +1,5 @@
 using Application.Common.interfaces;
-using Application.Order.Queries;
+using Application.Orders.Queries;
 using Domain.Aggregates.OrderAggregate.Repositories;
 using Infrastructure.Persistence.Read;
 using Infrastructure.Persistence.Read.Queries.Orders;

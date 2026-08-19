@@ -1,4 +1,4 @@
-using Application.Order.Queries.ReadModels;
+using Application.Orders.Queries.ReadModels;
 using Domain.Aggregates.OrderAggregate.Enums;
 
 internal static class OrderReadMapper

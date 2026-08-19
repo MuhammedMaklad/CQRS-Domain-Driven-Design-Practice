@@ -1,6 +1,6 @@
-using Application.Order.Queries.ReadModels;
+using Application.Orders.Queries.ReadModels;
 
-namespace Application.Order.Queries;
+namespace Application.Orders.Queries;
 
 public interface IOrderQueryService
 {

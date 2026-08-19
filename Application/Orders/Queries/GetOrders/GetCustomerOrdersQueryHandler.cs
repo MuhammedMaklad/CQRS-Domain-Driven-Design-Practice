@@ -1,7 +1,8 @@
-using Application.Order.Queries.ReadModels;
+using Application.Orders.Queries;
+using Application.Orders.Queries.ReadModels;
 using MediatR;
 
-namespace Application.Order.Queries.GetOrders;
+namespace Application.Orders.Queries.GetOrders;
 
 
 public sealed class GetCustomerOrdersQueryHandler : IRequestHandler<GetCustomerOrdersQuery, IEnumerable<OrderReadModel>>

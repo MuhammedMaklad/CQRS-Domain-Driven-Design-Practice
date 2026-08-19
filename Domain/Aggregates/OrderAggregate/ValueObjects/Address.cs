@@ -24,4 +24,7 @@ public sealed record Address
     PostalCode = postalCode;
     Country = country;
   }
+
+  public static Address Create(string street, string city, string postalCode, string country)
+  => new Address(street, city, postalCode, country);
 }
