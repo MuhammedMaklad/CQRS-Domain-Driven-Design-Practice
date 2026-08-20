@@ -44,10 +44,14 @@ cqrs-pratice/
 ├── Application/                              # → Domain
 │   ├── Common/
 │   │   ├── Behaviors/        ValidationBehavior (MediatR pipeline)
+│   │   ├── Exceptions/       AppException (application-layer base)
 │   │   └── Interfaces/       IUnitOfWork, IDbConnectionFactory
 │   ├── Orders/
 │   │   ├── Commands/CreateOrder/   CreateOrderCommand, CreateOrderCommandHandler,
 │   │   │                           CreateOrderCommandValidations (validator + child validators)
+│   │   ├── Commands/AddOrderItem/  AddOrderItemCommand, AddOrderItemCommandHandler,
+│   │   │                           AddOrderItemValidation
+│   │   ├── Exceptions/             OrderNotFoundException
 │   │   └── Queries/                IOrderQueryService, ReadModels,
 │   │                               GetOrderById, GetOrders
 │   └── DependencyInjection.cs      AddApplication() — MediatR + FluentValidation + behavior
@@ -64,7 +68,7 @@ cqrs-pratice/
     ├── Program.cs                  AddApplication + AddInfrastructure + OpenAPI +
     │                               ProblemDetails + exception handler
     ├── Endpoints/OrderEndpoints.cs MapGroup /api/v1/orders
-    ├── Exceptions/GlobalExceptionHandler.cs   DomainException/ValidationException → 400
+    ├── Exceptions/GlobalExceptionHandler.cs   DomainException/ValidationException/AppException → 400
     ├── Middlewares/RequestLoggingMiddleware.cs  method/path/status/duration logs
     └── appsettings*.json           connection string (Default)
 ```
@@ -83,6 +87,7 @@ cqrs-pratice/
 ## Validation (FluentValidation)
 
 - `CreateOrderCommandValidator` + `ShippingAddressValidator` + `ItemRequestValidator`
+- `AddOrderItemValidation` — order/product/currency non-empty, unit price > 0, quantity 1–100
 - Runs **before** the handler via `ValidationBehavior` (MediatR pipeline behavior), which
   throws FluentValidation `ValidationException` on failures
 - Rules: non-empty customer/address/currency, price > 0, quantity 1–100
@@ -113,6 +118,7 @@ MapOpenApi (dev) → RequestLoggingMiddleware → UseExceptionHandler → UseHtt
 - `GlobalExceptionHandler` (`IExceptionHandler`) —
   - `DomainException` → `400 { Message }`
   - `ValidationException` → `400 { Message, Errors[] }`
+  - `AppException` (incl. `OrderNotFoundException`) → `400 { Message: "Invalid Inputs", Details }`
   - anything else → `500 { Message, Inspect }`
 
 ## API (Presentation)
@@ -122,6 +128,7 @@ MapOpenApi (dev) → RequestLoggingMiddleware → UseExceptionHandler → UseHtt
 | GET | `/api/v1/orders/{id:guid}` | Order by id (read model) |
 | GET | `/api/v1/orders/customer/{id:guid}` | Orders for a customer |
 | POST | `/api/v1/orders/create` | Create order → `201 { id }`; invalid input → `400` |
+| POST | `/item/add` | Add item to order → `200 { Message }`; missing order → `400` (`OrderNotFoundException`); invalid input → `400` |
 | GET | `/health` | Liveness check |
 
 POST body:
@@ -134,6 +141,19 @@ POST body:
 ```
 Missing/empty `itemRequests`, empty address fields, non-positive price, or qty outside
 1–100 → `400` with `Errors[]` (validation runs before the handler — no NRE path).
+
+`POST /item/add` body:
+```json
+{
+  "orderId": "cfe9d87a-fb87-4753-9e44-64ccb4787721",
+  "productId": "00000000-0000-0000-0000-000000000101",
+  "unitPrice": 10.5,
+  "currency": "USD",
+  "quantity": 2
+}
+```
+An unknown `orderId` → `400` via `OrderNotFoundException`; an unknown `productId` merges
+into a new line (no product catalog exists yet).
 
 ## Database & Migrations
 
@@ -164,10 +184,12 @@ projects via Dapper.
 - [x] Application/CQRS: MediatR, `CreateOrder` command, `GetOrderById` / `GetCustomerOrders` queries
 - [x] Dapper read side: `OrderQueries`, rows + mapper, `DbConnectionFactory`
 - [x] FluentValidation: `CreateOrderCommandValidator` + `ValidationBehavior` pipeline
+- [x] Application exceptions: `AppException` base + `OrderNotFoundException` (→ 400)
+- [x] `AddOrderItem` command (EF write side)
 - [x] Middleware: `GlobalExceptionHandler` + `RequestLoggingMiddleware`
 - [x] DI wiring + Program.cs + endpoints — verified end-to-end
 - [ ] Domain event dispatch (events raised in aggregate, not yet handled)
-- [ ] More write commands — Confirm/Cancel, AddItem/RemoveItem (roadmap: `Plan.md`)
+- [ ] More write commands — Confirm/Cancel, RemoveItem (roadmap: `Plan.md`)
 
 ## Known Issues
 
@@ -177,3 +199,9 @@ projects via Dapper.
 - 500 envelope exposes `Inspect = exception.Message` — fine for dev, should be gated on
   `IsDevelopment()` before production use
 - Domain events raised but not dispatched — intentional, next learning step
+- `POST /item/add` is wired on the root route builder, so it sits **outside** the
+  `/api/v1/orders` group (inconsistent with `/create`); route/body also don't take the
+  order id in the path
+- `AddOrderItemValidation` quantity bound uses `LessThan(OrderItem.MaxQuantityPerLine)`
+  (rejects qty = 100) whereas CreateOrder uses `LessThanOrEqualTo` — inconsistent
+- Dead `using System.Data;` in `AddOrderItemValidation.cs` (cosmetic)
