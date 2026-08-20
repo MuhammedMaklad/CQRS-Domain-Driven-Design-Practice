@@ -6,16 +6,60 @@ with a mentor. Modeling only — no tests.
 
 ## Architecture
 
-| Layer | Responsibility | Depends on |
+Clean Architecture with the dependency rule pointing inward — each layer references only
+the layers below it:
+
+```
+Presentation  ──> Application ──> Domain
+Presentation  ──> Infrastructure
+Infrastructure ──> Application ──> Domain      (Domain has zero dependencies)
+```
+
+### Layer responsibilities
+
+| Layer | Responsibility | Key types |
 |---|---|---|
-| Domain | Aggregates, entities, value objects, domain events, invariants | — |
-| Application | Use cases (MediatR), query ports, read models, validation, `IUnitOfWork`, `IDbConnectionFactory` | Domain |
-| Infrastructure | EF Core write side, Dapper read side, migrations | Application, Domain |
-| Presentation | Minimal APIs, global exception handler, request logging | Application, Infrastructure |
+| Domain | Pure business model — aggregates, entities, value objects, domain events, invariants, repository ports | `Order`, `OrderItem`, `Money`, `Address`, `OrderId`, `IOrderRepository`, `DomainException` |
+| Application | Use cases (MediatR), query ports + read models, validation, `IUnitOfWork`, `IDbConnectionFactory` | `CreateOrderCommand(+Handler)`, `AddOrderItemCommand(+Handler)`, `IOrderQueryService`, `AppException` |
+| Infrastructure | EF Core write side, Dapper read side, migrations | `EFOrderRepository`, `EFUnitOfWork`, `ApplicationDbContext`, `OrderQueries`, `DbConnectionFactory` |
+| Presentation | Minimal APIs, exception handler, request logging, DI composition root | `OrderEndpoints`, `GlobalExceptionHandler`, `RequestLoggingMiddleware`, `Program.cs` |
+
+### CQRS: two pipelines
+
+**Command (write) path** — EF Core + aggregates:
+
+```
+Endpoint → AddOrderItemCommand
+        → ValidationBehavior (FluentValidation, runs before the handler)
+        → AddOrderItemCommandHandler
+        → IOrderRepository.GetByIdAsync → Order aggregate (AddItem: guard + event)
+        → IUnitOfWork.SaveChangesAsync → ApplicationDbContext → SQL Server
+```
+
+**Query (read) path** — Dapper + purpose-built projections:
+
+```
+Endpoint → GetOrderByIdQuery
+        → GetOrderByIdQueryHandler
+        → IOrderQueryService (port)
+        → OrderQueries (Dapper adapter) → SQL Server
+        → OrderReadModel (projection — no domain types leak into responses)
+```
 
 CQRS separation: **write = EF Core** (repositories + unit of work), **read = Dapper**
 (projections). Command/query handlers, ports, and read models live in Application;
 Dapper adapters live in Infrastructure.
+
+### Tactical DDD building blocks
+
+| Pattern | Implementation in this repo |
+|---|---|
+| Aggregate root | `Order : AggregateRoot<OrderId>` (marker `IAggregateRoot`) — guards `EnsureIsPending()`, recalculates `TotalPrice`, raises domain events |
+| Entity | `OrderItem : Entity<OrderItemId>` — identity-based equality from `Entity<TId>` (`==`, `!=`, `GetHashCode`) |
+| Value objects | `Money : ValueObject` (structural equality; `Add`/`Subtract`/`Multiply`/`ApplyDiscount`), `Address` sealed record + `Create` factory, id VOs as `readonly record struct` (`OrderId`, `OrderItemId`, `CustomerId`, `ProductId`) with `New()`/`From()` |
+| Domain events | `DomainEvent` base (`EventId`, `OccurredOnUtc`) + `OrderItemAdded`, `OrderItemRemoved`, `OrderConfirmed`, `OrderCancelled` — raised in the aggregate, dispatch not yet implemented |
+| Invariants / guard clauses | `DomainException` thrown from aggregates and VOs, e.g. `OrderItem` quantity 1–`MaxQuantityPerLine` (100), `Money.Create` non-negative amount, status-transition guards |
+| Repository ports | `IOrderRepository` (Domain) → `EFOrderRepository` (Infrastructure); `IOrderQueryService` (Application) → `OrderQueries` (Infrastructure) |
 
 ## Tech Stack
 
@@ -32,41 +76,37 @@ Dapper adapters live in Infrastructure.
 cqrs-pratice/
 ├── Domain/                                    # no dependencies
 │   ├── Common/
-│   │   ├── Abstractions/   IAggregateRoot, IDomainEvent
-│   │   ├── BaseClasses/    AggregateRoot, Entity, DomainEvent, ValueObject
-│   │   └── Exceptions/     DomainException
+│   │   ├── Abstractions/         IAggregateRoot, IDomainEvent
+│   │   ├── BaseClasses/          AggregateRoot, Entity, ValueObject, DomainEvent
+│   │   └── Exceptions/           DomainException
 │   └── Aggregates/OrderAggregate/
-│       ├── Entities/         Order, OrderItem
-│       ├── Enums/            OrderStatus
-│       ├── Events/           OrderItemAdded, OrderItemRemoved, OrderConfirmed, OrderCancelled
-│       ├── Repositories/     IOrderRepository
-│       └── ValueObjects/     OrderId, OrderItemId, CustomerId, ProductId, Money, Address
+│       ├── Entities/             Order, OrderItem
+│       ├── Enums/                OrderStatus
+│       ├── Events/               OrderItemAdded, OrderItemRemoved, OrderConfirmed, OrderCancelled
+│       ├── Repositories/         IOrderRepository
+│       └── ValueObjects/         OrderId, OrderItemId, CustomerId, ProductId, Money, Address
 ├── Application/                              # → Domain
 │   ├── Common/
-│   │   ├── Behaviors/        ValidationBehavior (MediatR pipeline)
-│   │   ├── Exceptions/       AppException (application-layer base)
-│   │   └── Interfaces/       IUnitOfWork, IDbConnectionFactory
+│   │   ├── Behaviors/            ValidationBehavior
+│   │   ├── Exceptions/           AppException
+│   │   └── Interfaces/           IUnitOfWork, IDbConnectionFactory
 │   ├── Orders/
-│   │   ├── Commands/CreateOrder/   CreateOrderCommand, CreateOrderCommandHandler,
-│   │   │                           CreateOrderCommandValidations (validator + child validators)
-│   │   ├── Commands/AddOrderItem/  AddOrderItemCommand, AddOrderItemCommandHandler,
-│   │   │                           AddOrderItemValidation
+│   │   ├── Commands/CreateOrder/   CreateOrderCommand(+Handler),
+│   │   │                           CreateOrderCommandValidations
+│   │   ├── Commands/AddOrderItem/  AddOrderItemCommand(+Handler), AddOrderItemValidation
 │   │   ├── Exceptions/             OrderNotFoundException
-│   │   └── Queries/                IOrderQueryService, ReadModels,
-│   │                               GetOrderById, GetOrders
-│   └── DependencyInjection.cs      AddApplication() — MediatR + FluentValidation + behavior
+│   │   └── Queries/                IOrderQueryService, ReadModels, GetOrderById, GetOrders
+│   └── DependencyInjection.cs      AddApplication()
 ├── Infrastructure/                           # → Application, Domain
-│   ├── DependencyInjection.cs      AddInfrastructure(IConfiguration) — DbContext + ports
+│   ├── DependencyInjection.cs      AddInfrastructure(IConfiguration)
 │   └── Persistence/
 │       ├── Write/                  ApplicationDbContext, DesignTimeDbContextFactory,
-│       │                           Configurations (Order/OrderItemConfigurations),
-│       │                           Repositories (RepositoryBase, EFOrderRepository,
-│       │                           EFUnitOfWork), Migrations (init)
-│       └── Read/                   DbConnectionFactory,
-│                                   Queries/Orders (OrderQueries, OrderRows, OrderReadMapper)
+│       │                           Configurations, Repositories, Migrations
+│       └── Read/                   DbConnectionFactory, Queries/Orders (OrderQueries,
+│                                   OrderRows, OrderReadMapper)
 └── Presentation/                             # → Application, Infrastructure
     ├── Program.cs                  AddApplication + AddInfrastructure + OpenAPI +
-    │                               ProblemDetails + exception handler
+    │                               ProblemDetails + exception handler + pipeline
     ├── Endpoints/OrderEndpoints.cs MapGroup /api/v1/orders
     ├── Exceptions/GlobalExceptionHandler.cs   DomainException/ValidationException/AppException → 400
     ├── Middlewares/RequestLoggingMiddleware.cs  method/path/status/duration logs
