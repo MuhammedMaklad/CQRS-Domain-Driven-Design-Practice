@@ -1,72 +1,87 @@
 # Plan — Full DDD + CQRS Practice Project
 
+Living status document — `[x]` done · `[~]` partial · `[ ]` next.
+
 ## Architecture Decisions
 
 | Decision | Choice |
 |----------|--------|
 | Goal | Full end-to-end DDD + CQRS |
-| CQRS library | MediatR |
-| Read (query) side | Dapper projections |
-| Domain depth | Order lifecycle (pending → submitted → shipped → completed) |
-| Aggregate identity | OrderId = Guid-based value object (domain-owned) |
+| CQRS library | MediatR 12.5 |
+| Read (query) side | Dapper projections (`IOrderQueryService` port) |
+| Domain depth | Order lifecycle `PENDING → CONFIRMED → CANCELLED` |
+| Aggregate identity | `OrderId` = Guid-based `readonly record struct` (domain-owned) |
 | API style | Minimal APIs |
 | Write side | EF Core (SQL Server) |
+| Validation | FluentValidation 12.1 via MediatR pipeline behavior |
+
+> Note: `AGENTS.md` / `README.md` still describe an older 4-state lifecycle
+> (`pending → submitted → shipped → completed`). The implemented model is
+> `PENDING → CONFIRMED → CANCELLED` — reconcile the docs or migrate the aggregate.
 
 ## Layer Dependencies
 
 - `Domain` — no dependencies
-- `Application` → `Domain`; packages: `MediatR`, `FluentValidation.DependencyInjectionExtensions`
-- `Infrastructure` → `Application`, `Domain`; existing EF Core + Dapper + SqlClient packages
+- `Application` → `Domain`; packages: `MediatR`, `FluentValidation` + `FluentValidation.DependencyInjectionExtensions`
+- `Infrastructure` → `Application`, `Domain`; EF Core + Dapper + SqlClient packages
 - `Presentation` → `Application`, `Infrastructure`
 
 ---
 
-## Phase 0 — References & Packages
+## Phase 0 — References & Packages — [x]
 
-- `Application` → add project reference to `Domain`; add packages `MediatR` and `FluentValidation.DependencyInjectionExtensions`
-- `Infrastructure` → add project reference to `Application`
-- `Presentation` → add project references to `Application` and `Infrastructure`
+- `Application` → project reference to `Domain`; packages `MediatR` 12.5 + `FluentValidation` 12.1 (+ extensions)
+- `Infrastructure` → project reference to `Application`
+- `Presentation` → project references to `Application` and `Infrastructure`
 
-## Phase 1 — Domain Hardening
+## Phase 1 — Domain Hardening — [x]
 
-1. Make `DomainException` `public` (`Domain/Common/Exceptions/DomainException.cs`)
-2. Change `OrderId` to `readonly record struct OrderId(Guid value)` with `OrderId.New()` factory; keep `CustomerId`/`ProductId` as `int` VOs
-3. Fix `OrderItem`:
-   - Correct quantity validation in `UpdateQuantity` / `IncreaseQuantity` / `DecreaseQuantity`
-   - Remove unused `orderId` parameter from `OrderItem.Create`
-4. Fix `DomainEvent.OccurredOnUtc` — set to `DateTime.UtcNow` at construction
-5. Complete `Order` aggregate (`AggregateRoot<OrderId>`):
-   - `Create(CustomerId, Address)` generates `OrderId.New()`
-   - State machine `pending → submitted → shipped → completed` with guarded transitions
-   - `AddItem` / `UpdateItemQuantity` / `RemoveItem` (allowed only while pending) + maintained `ReCalculateTotalPrice()`
-   - `Submit()` / `Ship()` / `Complete()`
-6. Domain events under `Domain/Aggregates/OrderAggregate/Events/`:
-   `OrderCreated`, `OrderItemAdded`, `OrderItemRemoved`, `OrderItemQuantityUpdated`, `OrderSubmitted`, `OrderShipped`, `OrderCompleted`
+- [x] `DomainException` is `public` (`Domain/Common/Exceptions/DomainException.cs`)
+- [x] `OrderId` `readonly record struct` with `New()` / `From()` factories; `CustomerId` / `ProductId` / `OrderItemId` as Guid `readonly record struct`
+- [x] `OrderItem` guards: `MaxQuantityPerLine = 100`, `Create` / `UpdateQuantity` / `IncreaseQuantity` / `DecreaseQuantity` validation
+- [x] `DomainEvent.OccurredOnUtc` = `DateTime.UtcNow` at construction
+- [x] `Order` aggregate (`AggregateRoot<OrderId>`):
+  - `Create(CustomerId, Address)` → `OrderId.New()`; plus `Create(CustomerId, Address, IEnumerable<OrderItem>)` overload (adds via `AddItem`)
+  - State machine `PENDING → CONFIRMED → CANCELLED` with guarded transitions (`Confirm`, `Cancel`)
+  - `AddItem` (merges duplicate product lines), `RemoveItem`, `ReCalculateTotalPrice`
+  - `OrderItems` exposed as `IReadOnlyCollection` over a private `List` (EF-friendly)
+- [x] Domain events: `OrderItemAdded`, `OrderItemRemoved`, `OrderConfirmed`, `OrderCancelled`
 
-## Phase 2 — Application Layer
+## Phase 2 — Application Layer — [~]
 
-- `Orders/Commands/`: `CreateOrder`, `AddOrderItem`, `UpdateOrderItemQuantity`, `RemoveOrderItem`, `SubmitOrder`, `ShipOrder`, `CompleteOrder` — each with Command + MediatR handler + FluentValidation validator
-- `Orders/Queries/`: `GetOrderById`, `GetOrders` (paged) → `OrderReadDto`, `OrderItemReadDto`
-- `Orders/Abstractions/`: `IOrderRepository`, `IOrderReadRepository`, `IDomainEventDispatcher`
-- `Common/`: `Result` / `Result<T>`, validation `IPipelineBehavior`
-- Sample `OrderSubmitted` event handler (simulated notification)
+- [x] `Orders/Commands/CreateOrder/` — `CreateOrderCommand` + handler + `CreateOrderCommandValidations`
+- [x] `Orders/Queries/` — `GetOrderById`, `GetCustomerOrders` + read models (`OrderReadModel`, `OrderItemReadModel`)
+- [x] `Common/Behaviors/ValidationBehavior` — MediatR pipeline behavior (throws `ValidationException` on failures)
+- [ ] `Orders/Commands/`: `AddOrderItem`, `UpdateOrderItemQuantity`, `RemoveOrderItem` (wrap existing aggregate methods)
+- [ ] `Orders/Commands/`: `ConfirmOrder`, `CancelOrder` + endpoints
+- [ ] `IDomainEventDispatcher` port + sample event handler (`OrderConfirmed`)
+- [ ] (optional) `Result` / `Result<T>`
 
-## Phase 3 — Infrastructure
+## Phase 3 — Infrastructure — [~]
 
-- `OrderConfigurations`: map `OrderId` (Guid) PK via value converter, `Money`/`Address` as complex/owned properties, `OrderItems` one-to-many, status, timestamps
-- `ApplicationDbContext`: register configurations; `SaveChangesAsync` dispatches collected domain events via `IDomainEventDispatcher`
-- `EFCoreOrderRepository` (write side) + `DapperOrderReadRepository` (read side, raw SQL projections)
-- `Infrastructure.DependencyInjection` static class (DbContext, repositories, dispatcher) + EF initial migration
+- [x] `OrderConfigurations` / `OrderItemConfigurations` — Money/Address as complex types, `rowversion` concurrency, status-as-string
+- [x] `ApplicationDbContext` + write side: `RepositoryBase<T>`, `EFOrderRepository`, `EFUnitOfWork`
+- [x] Dapper read side: `DbConnectionFactory`, `OrderQueries` (multi-query + single `LEFT JOIN` multi-map), `OrderRows`, `OrderReadMapper`
+- [x] `AddInfrastructure(IConfiguration)` + migration `init` (20260817092451) — applied
+- [ ] Domain event dispatch — `SaveChangesAsync` collects and dispatches aggregate events via `IDomainEventDispatcher`
 
-## Phase 4 — Presentation
+## Phase 4 — Presentation — [x]
 
-- Remove weatherforecast template; add `appsettings` connection string
-- Minimal API feature endpoints delegating to MediatR
-- `AddProblemDetails()`; map `Result` failures and `DomainException` → 400 responses
-- Wire all layer DI in `Program.cs`
+- [x] Minimal API `MapGroup("/api/v1/orders")` — `GET /{id}`, `GET /customer/{id}`, `POST /create`
+- [x] `AddProblemDetails()` + `GlobalExceptionHandler` (`DomainException` / `ValidationException` → 400, else 500)
+- [x] `RequestLoggingMiddleware` (method/path/status/duration; placed outside the exception handler)
+- [x] `Program.cs` wired: `AddApplication`, `AddInfrastructure`, endpoints, connection string
 
-## Phase 5 — Verification
+## Phase 5 — Verification — [x]
 
-- `dotnet build` clean
-- Apply EF migration, run app, smoke-test full lifecycle over HTTP
-- Optional: xUnit project for order state-machine tests (recommended for DDD practice)
+- [x] `dotnet build cqrs-pratice.slnx` clean (0 errors; NU1903 + CS8981 warnings)
+- [x] Migration applied; end-to-end smoke test (`POST /api/v1/orders/create` → `GET /api/v1/orders/{id}`)
+- [ ] xUnit tests for the state machine — out of scope per AGENTS.md (modeling only)
+
+---
+
+## Roadmap (next)
+
+1. **Domain event dispatch** — `IDomainEventDispatcher` (Domain port) → dispatcher + `SaveChangesAsync` hookup (Infrastructure) → sample `OrderConfirmed` handler
+2. **Remaining write commands** — `AddOrderItem`, `UpdateOrderItemQuantity`, `RemoveOrderItem`, `ConfirmOrder`, `CancelOrder` + endpoints (FluentValidation validators each)
+3. **Optional** — `Result`/`Result<T>`; paged `GetOrders` query; `Inventory` aggregate + domain service for `ProductId` availability validation; reconcile lifecycle docs (AGENTS.md/README vs `PENDING → CONFIRMED → CANCELLED`)
