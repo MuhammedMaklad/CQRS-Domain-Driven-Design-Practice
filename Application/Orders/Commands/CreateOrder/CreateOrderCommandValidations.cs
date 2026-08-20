@@ -1,10 +1,9 @@
 
 
-using Application.Orders.Commands.CreateOrder;
 using Domain.Aggregates.OrderAggregate.Entities;
 using FluentValidation;
 
-namespace Application.Orders.Commands;
+namespace Application.Orders.Commands.CreateOrder;
 
 
 public sealed class CreateOrderCommandValidator : AbstractValidator<CreateOrderCommand>

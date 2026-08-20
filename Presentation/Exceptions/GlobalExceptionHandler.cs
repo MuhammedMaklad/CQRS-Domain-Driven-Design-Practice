@@ -1,5 +1,6 @@
 
 
+using Application.Common.Exceptions;
 using Domain.Common.Exceptions;
 using FluentValidation;
 using Microsoft.AspNetCore.Diagnostics;
@@ -23,6 +24,17 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
       {
         Message = "Validation Failed",
         Errors = validationException.Errors.Select(e => e.ErrorMessage).ToArray()
+      }, cancellationToken);
+      return true;
+    }
+    if (exception is AppException applicationException)
+    {
+      httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+
+      await httpContext.Response.WriteAsJsonAsync(new
+      {
+        Message = "Invalid Inputs",
+        Details = exception.Message
       }, cancellationToken);
       return true;
     }

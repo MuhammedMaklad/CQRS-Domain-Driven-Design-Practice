@@ -1,8 +1,8 @@
 using Application.Orders.Queries.GetOrderById;
 using Application.Orders.Queries.GetOrders;
 using Application.Orders.Commands.CreateOrder;
-using Domain.Common.Exceptions;
 using MediatR;
+using Application.Orders.Commands.AddOrderItem;
 
 namespace Presentation.Endpoints;
 
@@ -33,7 +33,6 @@ internal static class OrderEndpoints
 
     group.MapPost("/create", async (CreateOrderCommand command, ISender sender, CancellationToken token) =>
     {
-
       var id = await sender.Send(command, cancellationToken: token);
       return Results.Created($"/api/v1/orders/{id}", new
       {
@@ -43,7 +42,17 @@ internal static class OrderEndpoints
           id
         }
       });
+    });
 
+    app.MapPost("/item/add", async (AddOrderItemCommand command, ISender sender,
+    CancellationToken token) =>
+    {
+      var id = await sender.Send(command, token);
+
+      return Results.Ok(new
+      {
+        Message = $"Order Item Add to Order {id}"
+      });
     });
     return app;
   }
