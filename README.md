@@ -9,9 +9,9 @@ with a mentor. Modeling only — no tests.
 | Layer | Responsibility | Depends on |
 |---|---|---|
 | Domain | Aggregates, entities, value objects, domain events, invariants | — |
-| Application | Use cases (MediatR), query ports, read models, `IUnitOfWork`, `IDbConnectionFactory` | Domain |
+| Application | Use cases (MediatR), query ports, read models, validation, `IUnitOfWork`, `IDbConnectionFactory` | Domain |
 | Infrastructure | EF Core write side, Dapper read side, migrations | Application, Domain |
-| Presentation | Minimal APIs (endpoints) | Application, Infrastructure |
+| Presentation | Minimal APIs, global exception handler, request logging | Application, Infrastructure |
 
 CQRS separation: **write = EF Core** (repositories + unit of work), **read = Dapper**
 (projections). Command/query handlers, ports, and read models live in Application;
@@ -23,7 +23,7 @@ Dapper adapters live in Infrastructure.
 - EF Core 10 (SQL Server) — write side
 - Dapper + Microsoft.Data.SqlClient — read side
 - MediatR 12.5 — command/query pipeline
-- FluentValidation — planned
+- FluentValidation 12.1 — command validation (MediatR pipeline behavior)
 - Solution: `cqrs-pratice.slnx`
 
 ## Project Structure
@@ -31,6 +31,10 @@ Dapper adapters live in Infrastructure.
 ```
 cqrs-pratice/
 ├── Domain/                                    # no dependencies
+│   ├── Common/
+│   │   ├── Abstractions/   IAggregateRoot, IDomainEvent
+│   │   ├── BaseClasses/    AggregateRoot, Entity, DomainEvent, ValueObject
+│   │   └── Exceptions/     DomainException
 │   └── Aggregates/OrderAggregate/
 │       ├── Entities/         Order, OrderItem
 │       ├── Enums/            OrderStatus
@@ -38,23 +42,30 @@ cqrs-pratice/
 │       ├── Repositories/     IOrderRepository
 │       └── ValueObjects/     OrderId, OrderItemId, CustomerId, ProductId, Money, Address
 ├── Application/                              # → Domain
-│   ├── Common/Interfaces/     IUnitOfWork, IDbConnectionFactory
+│   ├── Common/
+│   │   ├── Behaviors/        ValidationBehavior (MediatR pipeline)
+│   │   └── Interfaces/       IUnitOfWork, IDbConnectionFactory
 │   ├── Orders/
-│   │   ├── Commands/CreateOrder/   CreateOrderCommand, CreateOrderCommandHandler
+│   │   ├── Commands/CreateOrder/   CreateOrderCommand, CreateOrderCommandHandler,
+│   │   │                           CreateOrderCommandValidations (validator + child validators)
 │   │   └── Queries/                IOrderQueryService, ReadModels,
 │   │                               GetOrderById, GetOrders
-│   └── DependencyInjection.cs      AddApplication() — MediatR
+│   └── DependencyInjection.cs      AddApplication() — MediatR + FluentValidation + behavior
 ├── Infrastructure/                           # → Application, Domain
 │   ├── DependencyInjection.cs      AddInfrastructure(IConfiguration) — DbContext + ports
 │   └── Persistence/
 │       ├── Write/                  ApplicationDbContext, DesignTimeDbContextFactory,
-│       │                           Configurations, Repositories (RepositoryBase,
-│       │                           EFOrderRepository, EFUnitOfWork), Migrations (init)
+│       │                           Configurations (Order/OrderItemConfigurations),
+│       │                           Repositories (RepositoryBase, EFOrderRepository,
+│       │                           EFUnitOfWork), Migrations (init)
 │       └── Read/                   DbConnectionFactory,
 │                                   Queries/Orders (OrderQueries, OrderRows, OrderReadMapper)
 └── Presentation/                             # → Application, Infrastructure
-    ├── Program.cs                  AddApplication + AddInfrastructure + OpenAPI + /health
+    ├── Program.cs                  AddApplication + AddInfrastructure + OpenAPI +
+    │                               ProblemDetails + exception handler
     ├── Endpoints/OrderEndpoints.cs MapGroup /api/v1/orders
+    ├── Exceptions/GlobalExceptionHandler.cs   DomainException/ValidationException → 400
+    ├── Middlewares/RequestLoggingMiddleware.cs  method/path/status/duration logs
     └── appsettings*.json           connection string (Default)
 ```
 
@@ -69,6 +80,15 @@ cqrs-pratice/
 - `OrderItems` exposed as `IReadOnlyCollection` over a private `List` (EF-friendly)
 - `IOrderRepository` (Domain port): `GetByIdAsync`, `ExistsAsync`, `Add`, `Remove`
 
+## Validation (FluentValidation)
+
+- `CreateOrderCommandValidator` + `ShippingAddressValidator` + `ItemRequestValidator`
+- Runs **before** the handler via `ValidationBehavior` (MediatR pipeline behavior), which
+  throws FluentValidation `ValidationException` on failures
+- Rules: non-empty customer/address/currency, price > 0, quantity 1–100
+  (`OrderItem.MaxQuantityPerLine`), and at least one item
+- → `400 { Message: "Validation Failed", Errors[] }`
+
 ## Persistence (Write / Read split)
 
 - **Write (EF Core):** `ApplicationDbContext` + configurations — Money/Address as complex
@@ -79,13 +99,29 @@ cqrs-pratice/
   via a single `LEFT JOIN` multi-map round-trip (`splitOn: "Id"`) grouped in memory.
   SQL rows (`OrderRow`, `OrderItemRow`) → `OrderReadMapper.Map`.
 
+## Middleware & Pipeline
+
+Request pipeline (order matters):
+
+```
+MapOpenApi (dev) → RequestLoggingMiddleware → UseExceptionHandler → UseHttpsRedirection → endpoints
+```
+
+- `RequestLoggingMiddleware` — logs `{Method} {Path} {Status} {Elapsed}ms` for every request
+  (in `finally`); on exception it `LogError`s and rethrows. Placed **outside** the exception
+  handler so the logged status reflects the real response.
+- `GlobalExceptionHandler` (`IExceptionHandler`) —
+  - `DomainException` → `400 { Message }`
+  - `ValidationException` → `400 { Message, Errors[] }`
+  - anything else → `500 { Message, Inspect }`
+
 ## API (Presentation)
 
 | Method | Route | Description |
 |---|---|---|
 | GET | `/api/v1/orders/{id:guid}` | Order by id (read model) |
 | GET | `/api/v1/orders/customer/{id:guid}` | Orders for a customer |
-| POST | `/api/v1/orders/create` | Create order → `201 { id }`; `DomainException` → `400` |
+| POST | `/api/v1/orders/create` | Create order → `201 { id }`; invalid input → `400` |
 | GET | `/health` | Liveness check |
 
 POST body:
@@ -96,6 +132,8 @@ POST body:
   "itemRequests": [ { "productId": "00000000-0000-0000-0000-000000000101", "unitPrice": 10.5, "currency": "USD", "quantity": 2 } ]
 }
 ```
+Missing/empty `itemRequests`, empty address fields, non-positive price, or qty outside
+1–100 → `400` with `Errors[]` (validation runs before the handler — no NRE path).
 
 ## Database & Migrations
 
@@ -125,14 +163,17 @@ projects via Dapper.
 - [x] EF write side: DbContext, configurations, migration `init` (applied), repos + UoW
 - [x] Application/CQRS: MediatR, `CreateOrder` command, `GetOrderById` / `GetCustomerOrders` queries
 - [x] Dapper read side: `OrderQueries`, rows + mapper, `DbConnectionFactory`
+- [x] FluentValidation: `CreateOrderCommandValidator` + `ValidationBehavior` pipeline
+- [x] Middleware: `GlobalExceptionHandler` + `RequestLoggingMiddleware`
 - [x] DI wiring + Program.cs + endpoints — verified end-to-end
-- [~] FluentValidation — planned
 - [ ] Domain event dispatch (events raised in aggregate, not yet handled)
-- [ ] Concurrency-aware write workflows (Confirm/Cancel endpoints)
+- [ ] More write commands — Confirm/Cancel, AddItem/RemoveItem (roadmap: `Plan.md`)
 
 ## Known Issues
 
 - `Microsoft.OpenApi` 2.0.0 — NU1903 high-severity vulnerability (bump pending)
 - Migration class `init` triggers CS8981 (lowercase type name) — cosmetic
 - `Application.Common.interfaces` namespace still lowercase — casing wart
+- 500 envelope exposes `Inspect = exception.Message` — fine for dev, should be gated on
+  `IsDevelopment()` before production use
 - Domain events raised but not dispatched — intentional, next learning step
