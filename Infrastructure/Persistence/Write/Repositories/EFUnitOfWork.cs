@@ -1,17 +1,41 @@
 using Application.Common.interfaces;
+using Domain.Common.Abstractions;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Infrastructure.Persistence.Write.Repositories;
 
-public sealed class EFUnitOfWork : IUnitOfWork
+public sealed class EFUnitOfWork(ApplicationDbContext context, IEventDispatcher eventDispatcher)
+: IUnitOfWork
 {
-  private readonly ApplicationDbContext context;
   private IDbContextTransaction? dbContextTransaction;
-  public EFUnitOfWork(ApplicationDbContext _context) => context = _context;
 
+  public async Task<int> SaveChangesAsync(CancellationToken token = default)
+  {
+    var domainEvents = CollectDomainEvents();
 
-  public Task<int> SaveChangesAsync(CancellationToken token = default)
-  => context.SaveChangesAsync(token);
+    var result = await context.SaveChangesAsync(token);
+
+    await eventDispatcher.DispatchAsync(domainEvents, token);
+
+    return result;
+  }
+
+  private List<IDomainEvent> CollectDomainEvents()
+  {
+    var aggregates = context.ChangeTracker.Entries<IAggregateRoot>()
+      .Where(entry => entry.Entity.DomainEvents.Count != 0)
+      .Select(entry => entry.Entity)
+      .ToList();
+
+    var domainEvents = aggregates
+      .SelectMany(aggregate => aggregate.DomainEvents)
+      .ToList();
+
+    foreach (var aggregate in aggregates)
+      aggregate.ClearDomainEvents();
+
+    return domainEvents;
+  }
 
   public async Task BeginTransactionAsync(CancellationToken token = default)
   => dbContextTransaction = await context.Database.BeginTransactionAsync(token);
