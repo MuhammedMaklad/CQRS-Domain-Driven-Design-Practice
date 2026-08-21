@@ -10,10 +10,27 @@ Clean Architecture with the dependency rule pointing inward — each layer refer
 the layers below it:
 
 ```
-Presentation  ──> Application ──> Domain
-Presentation  ──> Infrastructure
-Infrastructure ──> Application ──> Domain      (Domain has zero dependencies)
+┌─────────────────────────────────────────────────────────────────┐
+│ Presentation                                                     │
+│ minimal APIs · HTTP · logging                                    │
+└───────────────┬─────────────────────────────────┬───────────────┘
+                │                                 │
+                ▼                                 ▼
+┌───────────────────────────────┐   ┌───────────────────────────────┐
+│ Application                   │   │ Infrastructure                │
+│ MediatR · CQRS                │   │ EF Core (write)               │
+│ validation · ports            │   │ Dapper (read)                 │
+└───────────────┬───────────────┘   └───────────────┬───────────────┘
+                │                                   │
+                └────────────────┬──────────────────┘
+                                 ▼
+                    ┌───────────────────────────────┐
+                    │ Domain (no dependencies)      │
+                    │ aggregates · VOs · events     │
+                    └───────────────────────────────┘
 ```
+
+Dependencies point **downward** only — `Domain` never references anything above it.
 
 ### Layer responsibilities
 
