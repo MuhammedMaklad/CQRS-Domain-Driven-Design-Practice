@@ -5,6 +5,7 @@ using Infrastructure.Persistence.Read;
 using Infrastructure.Persistence.Read.Queries.Orders;
 using Infrastructure.Persistence.Write;
 using Infrastructure.Persistence.Write.Dispatching;
+using Infrastructure.Persistence.Write.Outbox;
 using Infrastructure.Persistence.Write.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -24,6 +25,7 @@ public static class DependencyInjection
     services.AddScoped<IOrderRepository, EFOrderRepository>();
     services.AddScoped<IDbConnectionFactory, DbConnectionFactory>();
     services.AddScoped<IOrderQueryService, OrderQueries>();
+    services.AddHostedService<OutboxProcessor>();
 
     return services;
   }

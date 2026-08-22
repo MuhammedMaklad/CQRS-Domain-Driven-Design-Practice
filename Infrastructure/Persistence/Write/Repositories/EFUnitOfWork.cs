@@ -1,10 +1,11 @@
 using Application.Common.interfaces;
 using Domain.Common.Abstractions;
+using Infrastructure.Persistence.Write.Outbox;
 using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Infrastructure.Persistence.Write.Repositories;
 
-public sealed class EFUnitOfWork(ApplicationDbContext context, IEventDispatcher eventDispatcher)
+public sealed class EFUnitOfWork(ApplicationDbContext context)
 : IUnitOfWork
 {
   private IDbContextTransaction? dbContextTransaction;
@@ -13,11 +14,16 @@ public sealed class EFUnitOfWork(ApplicationDbContext context, IEventDispatcher 
   {
     var domainEvents = CollectDomainEvents();
 
-    var result = await context.SaveChangesAsync(token);
 
-    await eventDispatcher.DispatchAsync(domainEvents, token);
+    var outboxMessages = domainEvents.
+    Select(domainEvent => new OutboxMessage(
+      domainEvent.GetType().AssemblyQualifiedName!,
+      OutboxSerializer.Serialize(domainEvent)
+      )).ToList();
+    context.Set<OutboxMessage>().AddRange(outboxMessages);
+    // await eventDispatcher.DispatchAsync(domainEvents, token);
 
-    return result;
+    return await context.SaveChangesAsync(token);
   }
 
   private List<IDomainEvent> CollectDomainEvents()
