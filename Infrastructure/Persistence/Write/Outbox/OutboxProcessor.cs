@@ -1,5 +1,3 @@
-
-
 using Application.Common.interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +14,7 @@ internal sealed class OutboxProcessor(
 {
   private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
   private const int BatchSize = 20;
+
   protected override async Task ExecuteAsync(CancellationToken stoppingToken)
   {
     while (!stoppingToken.IsCancellationRequested)
@@ -24,7 +23,7 @@ internal sealed class OutboxProcessor(
       {
         await ProcessPendingAsync(stoppingToken);
       }
-      catch (OperationCanceledException)
+      catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
       {
         break;
       }
@@ -32,19 +31,27 @@ internal sealed class OutboxProcessor(
       {
         logger.LogError(ex, "Outbox processing tick failed");
       }
+
+      try
+      {
+        await Task.Delay(PollInterval, stoppingToken);
+      }
+      catch (OperationCanceledException)
+      {
+        break;
+      }
     }
-    await Task.Delay(PollInterval, stoppingToken);
   }
+
   private async Task ProcessPendingAsync(CancellationToken token)
   {
     using var scope = scopeFactory.CreateScope();
     var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     var eventDispatcher = scope.ServiceProvider.GetRequiredService<IEventDispatcher>();
 
-
     var messages = await context.Set<OutboxMessage>()
-    .Where(message => message.ProceedInUTC == null)
-    .OrderBy(message => message.OccurredOnUTC)
+    .Where(message => message.ProcessedOnUtc == null)
+    .OrderBy(message => message.OccurredOnUtc)
     .Take(BatchSize)
     .ToListAsync(token);
 
@@ -54,13 +61,15 @@ internal sealed class OutboxProcessor(
       {
         var domainEvent = OutboxSerializer.Deserialize(message.Type, message.Content);
         await eventDispatcher.DispatchAsync([domainEvent], token);
-        message.MarkProceed(DateTime.UtcNow);
+        message.MarkProcessed(DateTime.UtcNow);
       }
       catch (Exception ex)
       {
-        message.MarkField(ex.Message);
+        message.MarkFailed(ex.Message);
         logger.LogError(ex, "Failed to process outbox message {OutboxMessageId} (attempt {Attempts})", message.Id, message.Attempts);
       }
     }
+
+    await context.SaveChangesAsync(token);
   }
 }

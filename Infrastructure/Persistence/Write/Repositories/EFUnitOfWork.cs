@@ -14,14 +14,12 @@ public sealed class EFUnitOfWork(ApplicationDbContext context)
   {
     var domainEvents = CollectDomainEvents();
 
-
     var outboxMessages = domainEvents.
     Select(domainEvent => new OutboxMessage(
       domainEvent.GetType().AssemblyQualifiedName!,
       OutboxSerializer.Serialize(domainEvent)
       )).ToList();
     context.Set<OutboxMessage>().AddRange(outboxMessages);
-    // await eventDispatcher.DispatchAsync(domainEvents, token);
 
     return await context.SaveChangesAsync(token);
   }

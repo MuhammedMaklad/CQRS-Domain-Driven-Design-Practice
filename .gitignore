@@ -471,3 +471,5 @@ RestSharp.CodeAnalysis.xml
 *.bin
 *.dmp
 *.so
+# session logs
+session-*.md
